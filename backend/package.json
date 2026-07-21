@@ -1,0 +1,17 @@
+{
+  "name": "dynamic-workflow-generator-backend",
+  "version": "1.0.0",
+  "description": "Express backend that turns plain English into a workflow JSON using an LLM",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0"
+  }
+}
