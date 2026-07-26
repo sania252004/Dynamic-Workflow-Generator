@@ -1,87 +1,44 @@
-// WorkflowList.jsx
-// Renders every workflow step as a vertical stack of cards connected by arrows.
-// Also has a small form at the bottom for adding a brand new step.
+import WorkflowCard from "./WorkflowCard";
 
-import { useState } from "react";
-import WorkflowCard from "./WorkflowCard.jsx";
+export default function WorkflowList({ steps, onEdit, onDelete, onCompleteStep }) {
+  const arePrerequisitesMet = (step) => {
+    if (!step.dependsOn || step.dependsOn.toLowerCase() === "none") return true;
 
-const STEP_TYPES = ["Input", "Approval", "Notification", "Decision", "Action", "End"];
+    const dependencies = step.dependsOn.split(",").map((d) => d.trim().toLowerCase());
 
-export default function WorkflowList({ workflow, onEdit, onDelete, onAdd }) {
-  const [newName, setNewName] = useState("");
-  const [newType, setNewType] = useState("Action");
-
-  function handleAddClick() {
-    if (newName.trim().length === 0) return; // ignore empty step names
-
-    onAdd({
-      stepName: newName.trim(),
-      stepType: newType,
-      dependencies: [],
+    return dependencies.every((depTitle) => {
+      const parentStep = steps.find(
+        (s) => s.title.toLowerCase().trim() === depTitle
+      );
+      return parentStep ? parentStep.status === "COMPLETED" : true;
     });
-
-    setNewName(""); // clear the input after adding
-  }
-
-  // Show a friendly empty state when there is no workflow yet
-  if (workflow.length === 0) {
-    return (
-      <div className="text-center py-16 text-slate-400">
-        <p className="text-lg font-medium">No workflow generated</p>
-        <p className="text-sm mt-1">Describe a process above and click "Generate Workflow".</p>
-      </div>
-    );
-  }
+  };
 
   return (
-    <div className="flex flex-col items-center">
-      {workflow.map((step, index) => (
-        <div key={step.id} className="flex flex-col items-center w-full">
-          <WorkflowCard step={step} onEdit={onEdit} onDelete={onDelete} />
-
-          {/* Draw a connecting arrow between this card and the next one */}
-          {index < workflow.length - 1 && (
-            <div className="text-slate-300 my-1" aria-hidden="true">
-              <svg width="20" height="28" viewBox="0 0 20 28" fill="none">
-                <path d="M10 0V22" stroke="currentColor" strokeWidth="2" />
-                <path d="M3 16L10 24L17 16" stroke="currentColor" strokeWidth="2" />
-              </svg>
-            </div>
-          )}
-        </div>
-      ))}
-
-      {/* Small inline form to add a new step at the end of the workflow */}
-      <div className="mt-6 w-full max-w-xl bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-4">
-        <p className="text-xs font-medium text-slate-500 mb-2">Add a new step</p>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Step name"
-            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm
-                       focus:outline-none focus:ring-2 focus:ring-flow-500"
-          />
-          <select
-            value={newType}
-            onChange={(e) => setNewType(e.target.value)}
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm
-                       focus:outline-none focus:ring-2 focus:ring-flow-500"
-          >
-            {STEP_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {type}
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={handleAddClick}
-            className="text-sm font-medium bg-ink-900 hover:bg-ink-950 text-white px-4 py-2 rounded-lg"
-          >
-            Add Step
-          </button>
-        </div>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-base font-bold text-slate-800">Pipeline Execution Steps ({steps.length})</h2>
       </div>
+
+      {steps.length === 0 ? (
+        <div className="bg-white p-8 rounded-2xl text-center text-slate-500 border border-slate-200 text-xs">
+          No workflow generated yet. Enter a prompt above or click "+ Add Custom Step" to create steps manually!
+        </div>
+      ) : (
+        steps.map((step, idx) => {
+          const isLocked = !arePrerequisitesMet(step);
+          return (
+            <WorkflowCard
+              key={step.id || idx}
+              step={{ ...step, sequence: idx + 1 }}
+              isLocked={isLocked}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onCompleteStep={onCompleteStep}
+            />
+          );
+        })
+      )}
     </div>
   );
 }

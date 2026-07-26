@@ -1,138 +1,258 @@
-// server.js
-// This is our Express server. It has ONE main job:
-// take a plain English sentence from the user, ask an LLM to turn it
-// into structured workflow JSON, and send that JSON back to React.
-
 import express from "express";
 import cors from "cors";
-import axios from "axios";
-import dotenv from "dotenv";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 
-dotenv.config(); // loads variables from the .env file into process.env
+// Recreate __dirname for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-
-// Allow our React app (running on a different port) to call this server
 app.use(cors());
-
-// Allow the server to understand JSON request bodies
 app.use(express.json());
 
-// Read settings from environment variables (with safe fallbacks)
-const PORT = process.env.PORT || 5000;
-const LLM_API_URL = process.env.LLM_API_URL || "https://api.openai.com/v1/chat/completions";
-const LLM_API_KEY = process.env.LLM_API_KEY;
-const LLM_MODEL = process.env.LLM_MODEL || "gpt-4o-mini";
-
-// This is the instruction we give the LLM every time.
-// It tells the model EXACTLY what shape of JSON we want back.
-const SYSTEM_PROMPT = `You convert a business process described in plain English into workflow JSON.
-
-Rules:
-- Reply with ONLY valid JSON. No markdown, no code fences, no explanations, no extra text.
-- Use this exact shape:
-{
-  "workflow": [
-    {
-      "id": 1,
-      "stepName": "Collect Documents",
-      "stepType": "Input",
-      "sequence": 1,
-      "dependencies": []
-    }
-  ]
+// 1. Ensure uploads directory exists
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
 }
-- "stepType" must be one of: "Input", "Approval", "Notification", "Decision", "Action", "End".
-- "id" and "sequence" are numbers, starting at 1, increasing in order.
-- "dependencies" is an array of stepName strings that must happen before this step (empty array if none).
-- Always include a final step with stepType "End".
-- Break the process into clear, sensible steps based on what the user describes.`;
 
-// Small helper function: tries to pull clean JSON out of whatever text the LLM sent back.
-// Sometimes models add stray text or markdown fences even when told not to, so we clean it up.
-function extractJson(rawText) {
-  // Remove ```json or ``` fences if the model added them anyway
-  let cleaned = rawText.trim();
-  cleaned = cleaned.replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "");
-  cleaned = cleaned.trim();
+// Serve uploaded files statically
+app.use("/uploads", express.static(uploadDir));
 
-  // As a last safety net, grab everything between the first { and the last }
-  const firstBrace = cleaned.indexOf("{");
-  const lastBrace = cleaned.lastIndexOf("}");
-  if (firstBrace !== -1 && lastBrace !== -1) {
-    cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+// 2. Configure Multer for PDF file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, `${uniqueSuffix}-${file.originalname}`);
+  },
+});
+
+const pdfFilter = (req, file, cb) => {
+  if (file.mimetype === "application/pdf") {
+    cb(null, true);
+  } else {
+    cb(new Error("Only PDF files are allowed!"), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  fileFilter: pdfFilter,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+});
+
+// 3. PDF Upload Endpoint
+app.post("/upload-pdf", upload.single("pdf"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No PDF file uploaded or invalid file format." });
   }
 
-  return JSON.parse(cleaned); // will throw if it's still not valid JSON
-}
+  const fileUrl = `http://localhost:5000/uploads/${req.file.filename}`;
+  res.json({
+    message: "PDF uploaded successfully!",
+    fileName: req.file.originalname,
+    fileUrl: fileUrl,
+  });
+});
 
-// POST /generate-workflow
-// Body: { "prompt": "some business process in plain English" }
-// Response: { "workflow": [ ...steps ] }
-app.post("/generate-workflow", async (req, res) => {
+// 4. Dynamic Workflow Generation Endpoint
+app.post("/generate-workflow", (req, res) => {
   const { prompt } = req.body;
 
-  // Basic validation: make sure the user actually sent some text
-  if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
-    return res.status(400).json({ error: "Please provide a 'prompt' describing your workflow." });
+  if (!prompt) {
+    return res.status(400).json({ error: "Please provide a prompt." });
   }
 
-  try {
-    // Call the OpenAI-compatible chat completions endpoint
-    const response = await axios.post(
-      LLM_API_URL,
+  const lower = prompt.toLowerCase();
+  let workflow = [];
+
+  // Branch 1: Vendor / Third-Party / Contractor Onboarding
+  if (
+    lower.includes("vendor") ||
+    lower.includes("contractor") ||
+    lower.includes("third party") ||
+    lower.includes("freelancer")
+  ) {
+    workflow = [
       {
-        model: LLM_MODEL,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2, // low temperature = more predictable, consistent JSON
+        id: "1",
+        sequence: 1,
+        title: "Vendor NDA & Compliance Verification",
+        type: "Input",
+        dependsOn: "none",
       },
       {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${LLM_API_KEY}`,
-        },
-      }
-    );
-
-    // Pull the raw text the model replied with
-    const rawText = response.data.choices?.[0]?.message?.content || "";
-
-    // Try to turn that text into a real JSON object
-    let workflowData;
-    try {
-      workflowData = extractJson(rawText);
-    } catch (parseError) {
-      console.error("Failed to parse LLM response as JSON:", rawText);
-      return res.status(502).json({
-        error: "The AI returned a response we couldn't understand. Please try rephrasing your workflow.",
-      });
-    }
-
-    // Make sure the parsed JSON actually has a "workflow" array
-    if (!workflowData.workflow || !Array.isArray(workflowData.workflow)) {
-      return res.status(502).json({
-        error: "The AI response was missing the expected workflow data. Please try again.",
-      });
-    }
-
-    // Everything looks good — send it to the frontend
-    return res.json(workflowData);
-  } catch (error) {
-    console.error("Error calling LLM API:", error.message);
-    return res.status(500).json({
-      error: "Something went wrong while generating the workflow. Please try again.",
-    });
+        id: "2",
+        sequence: 2,
+        title: "Provision VDI & Security Workspace Access",
+        type: "Action",
+        dependsOn: "Vendor NDA & Compliance Verification",
+      },
+      {
+        id: "3",
+        sequence: 3,
+        title: "Vendor Security Gate Pass & Badge Approval",
+        type: "Approval",
+        dependsOn: "Provision VDI & Security Workspace Access",
+      },
+      {
+        id: "4",
+        sequence: 4,
+        title: "Send Vendor Portal Onboarding Notification",
+        type: "Notification",
+        dependsOn: "Vendor Security Gate Pass & Badge Approval",
+      },
+      {
+        id: "5",
+        sequence: 5,
+        title: "Vendor Onboarding Complete",
+        type: "End",
+        dependsOn: "Send Vendor Portal Onboarding Notification",
+      },
+    ];
   }
+  // Branch 2: Expense Reimbursement Pipeline
+  else if (
+    lower.includes("expense") ||
+    lower.includes("receipt") ||
+    lower.includes("reimburse") ||
+    lower.includes("finance")
+  ) {
+    workflow = [
+      {
+        id: "1",
+        sequence: 1,
+        title: "Submit Expense Receipts & Proofs",
+        type: "Input",
+        dependsOn: "none",
+      },
+      {
+        id: "2",
+        sequence: 2,
+        title: "Manager Verification & Approval",
+        type: "Approval",
+        dependsOn: "Submit Expense Receipts & Proofs",
+      },
+      {
+        id: "3",
+        sequence: 3,
+        title: "Finance Audit & Budget Check",
+        type: "Approval",
+        dependsOn: "Manager Verification & Approval",
+      },
+      {
+        id: "4",
+        sequence: 4,
+        title: "Disburse Reimbursement Funds",
+        type: "Action",
+        dependsOn: "Finance Audit & Budget Check",
+      },
+      {
+        id: "5",
+        sequence: 5,
+        title: "Expense Processed & Complete",
+        type: "End",
+        dependsOn: "Disburse Reimbursement Funds",
+      },
+    ];
+  }
+  // Branch 3: IT & Security Incident Management
+  else if (
+    lower.includes("incident") ||
+    lower.includes("security") ||
+    lower.includes("triage") ||
+    lower.includes("outage")
+  ) {
+    workflow = [
+      {
+        id: "1",
+        sequence: 1,
+        title: "Submit Incident Report & Log Logs",
+        type: "Input",
+        dependsOn: "none",
+      },
+      {
+        id: "2",
+        sequence: 2,
+        title: "Triage Severity & Assess Risk",
+        type: "Action",
+        dependsOn: "Submit Incident Report & Log Logs",
+      },
+      {
+        id: "3",
+        sequence: 3,
+        title: "Notify IT & SecOps Alert Escalation",
+        type: "Notification",
+        dependsOn: "Triage Severity & Assess Risk",
+      },
+      {
+        id: "4",
+        sequence: 4,
+        title: "Isolate Affected Systems & Apply Patch",
+        type: "Action",
+        dependsOn: "Notify IT & SecOps Alert Escalation",
+      },
+      {
+        id: "5",
+        sequence: 5,
+        title: "Incident Resolved & RCA Complete",
+        type: "End",
+        dependsOn: "Isolate Affected Systems & Apply Patch",
+      },
+    ];
+  }
+  // Branch 4: Standard Full-Time Employee (FTE) Onboarding Pipeline
+  else {
+    workflow = [
+      {
+        id: "1",
+        sequence: 1,
+        title: "Collect Employee Documents",
+        type: "Input",
+        dependsOn: "none",
+      },
+      {
+        id: "2",
+        sequence: 2,
+        title: "Allocate Laptop & Corporate Assets",
+        type: "Action",
+        dependsOn: "Collect Employee Documents",
+      },
+      {
+        id: "3",
+        sequence: 3,
+        title: "Schedule Induction Session",
+        type: "Notification",
+        dependsOn: "Collect Employee Documents",
+      },
+      {
+        id: "4",
+        sequence: 4,
+        title: "Complete Mandatory Training",
+        type: "Approval",
+        dependsOn: "Schedule Induction Session, Allocate Laptop & Corporate Assets",
+      },
+      {
+        id: "5",
+        sequence: 5,
+        title: "Onboarding Complete",
+        type: "End",
+        dependsOn: "Complete Mandatory Training",
+      },
+    ];
+  }
+
+  res.json({ workflow });
 });
 
-// Simple health check route, useful for testing the server is alive
-app.get("/", (req, res) => {
-  res.send("Dynamic Workflow Generator backend is running.");
-});
-
+// 5. Start Server
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+  console.log(`✅ Server listening on http://localhost:${PORT}`);
 });
